@@ -44,8 +44,8 @@ fix: _assert-clean
     cargo fix --workspace --allow-dirty --allow-staged
     cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
-changelog:
-    git cliff -o CHANGELOG.md
+changelog *flags:
+    git cliff -o CHANGELOG.md {{ flags }}
 
 hakari:
     cargo hakari manage-deps
