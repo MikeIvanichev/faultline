@@ -1,5 +1,5 @@
-use crate::Error;
 use crate::ErrorKind;
+use crate::Fault;
 
 use serde::Deserialize;
 use serde::Deserializer;
@@ -11,11 +11,11 @@ use serde::de::{self};
 use std::fmt;
 use std::marker::PhantomData;
 
-// Note: this impl is generic over all `Error<D, T, I>`, but the set of
+// Note: this impl is generic over all `Fault<D, T, I>`, but the set of
 // serializations that can actually occur is constrained by Rust's type system.
-// States that cannot be constructed (e.g. `Error<_, Never, _>::Transient(_)`)
+// States that cannot be constructed (e.g. `Fault<_, Never, _>::Transient(_)`)
 // can never be serialized, even though they are covered by the match.
-impl<D, T, I> Serialize for Error<D, T, I>
+impl<D, T, I> Serialize for Fault<D, T, I>
 where
     D: Serialize,
     T: ErrorKind,
@@ -26,12 +26,12 @@ where
         S: Serializer,
     {
         match self {
-            Error::Domain(d) => serializer.serialize_newtype_variant("Error", 0, "Domain", d),
-            Error::Transient(t) => {
-                serializer.serialize_newtype_variant("Error", 1, "Transient", &t.to_string())
+            Fault::Domain(d) => serializer.serialize_newtype_variant("Fault", 0, "Domain", d),
+            Fault::Transient(t) => {
+                serializer.serialize_newtype_variant("Fault", 1, "Transient", &t.to_string())
             }
-            Error::Invariant(i) => {
-                serializer.serialize_newtype_variant("Error", 2, "Invariant", &i.to_string())
+            Fault::Invariant(i) => {
+                serializer.serialize_newtype_variant("Fault", 2, "Invariant", &i.to_string())
             }
         }
     }
@@ -45,9 +45,9 @@ enum Variant {
     Invariant,
 }
 
-macro_rules! impl_error_deserialize {
+macro_rules! impl_fault_deserialize {
     ($t:ty, $i:ty, $allow_t:ident, $allow_i:ident) => {
-        impl<'de, D> Deserialize<'de> for Error<D, $t, $i>
+        impl<'de, D> Deserialize<'de> for Fault<D, $t, $i>
         where
             D: Deserialize<'de>,
         {
@@ -55,16 +55,16 @@ macro_rules! impl_error_deserialize {
             where
                 De: Deserializer<'de>,
             {
-                struct ErrorVisitor<D>(PhantomData<D>);
+                struct FaultVisitor<D>(PhantomData<D>);
 
-                impl<'de, D> Visitor<'de> for ErrorVisitor<D>
+                impl<'de, D> Visitor<'de> for FaultVisitor<D>
                 where
                     D: Deserialize<'de>,
                 {
-                    type Value = Error<D, $t, $i>;
+                    type Value = Fault<D, $t, $i>;
 
                     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                        formatter.write_str("enum Error")
+                        formatter.write_str("enum Fault")
                     }
 
                     fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
@@ -75,15 +75,15 @@ macro_rules! impl_error_deserialize {
                         match variant {
                             Variant::Domain => {
                                 let content = variant_access.newtype_variant()?;
-                                Ok(Error::Domain(content))
+                                Ok(Fault::Domain(content))
                             }
-                            Variant::Transient => impl_error_deserialize!(
+                            Variant::Transient => impl_fault_deserialize!(
                                 @handle_transient
                                 $allow_t,
                                 $allow_i,
                                 variant_access
                             ),
-                            Variant::Invariant => impl_error_deserialize!(
+                            Variant::Invariant => impl_fault_deserialize!(
                                 @handle_invariant
                                 $allow_t,
                                 $allow_i,
@@ -94,9 +94,9 @@ macro_rules! impl_error_deserialize {
                 }
 
                 deserializer.deserialize_enum(
-                    "Error",
+                    "Fault",
                     &["Domain", "Transient", "Invariant"],
-                    ErrorVisitor(PhantomData),
+                    FaultVisitor(PhantomData),
                 )
             }
         }
@@ -106,7 +106,7 @@ macro_rules! impl_error_deserialize {
     // T allowed: construct anyhow::Error from string
     (@handle_transient allow, $allow_i:ident, $variant_access:ident) => {{
         let s: String = $variant_access.newtype_variant()?;
-        Ok(Error::Transient(anyhow::anyhow!(s)))
+        Ok(Fault::Transient(anyhow::anyhow!(s)))
     }};
     // T = Never, I = Never: only Domain is valid
     (@handle_transient disallow, disallow, $variant_access:ident) => {{
@@ -126,7 +126,7 @@ macro_rules! impl_error_deserialize {
     // I allowed: construct anyhow::Error from string
     (@handle_invariant $allow_t:ident, allow, $variant_access:ident) => {{
         let s: String = $variant_access.newtype_variant()?;
-        Ok(Error::Invariant(anyhow::anyhow!(s)))
+        Ok(Fault::Invariant(anyhow::anyhow!(s)))
     }};
     // I = Never, T = Never: only Domain is valid
     (@handle_invariant disallow, disallow, $variant_access:ident) => {{
@@ -145,10 +145,10 @@ macro_rules! impl_error_deserialize {
 
 // Implement deserialization for the concrete combinations we support in the
 // transient/invariant slots.
-impl_error_deserialize!(crate::Never, crate::Never, disallow, disallow);
-impl_error_deserialize!(anyhow::Error, crate::Never, allow, disallow);
-impl_error_deserialize!(crate::Never, anyhow::Error, disallow, allow);
-impl_error_deserialize!(anyhow::Error, anyhow::Error, allow, allow);
+impl_fault_deserialize!(crate::Never, crate::Never, disallow, disallow);
+impl_fault_deserialize!(anyhow::Error, crate::Never, allow, disallow);
+impl_fault_deserialize!(crate::Never, anyhow::Error, disallow, allow);
+impl_fault_deserialize!(anyhow::Error, anyhow::Error, allow, allow);
 
 #[cfg(test)]
 mod tests {
@@ -172,123 +172,123 @@ mod tests {
     const TRANSIENT_MSG: &str = "database connection failed";
     const INVARIANT_MSG: &str = "invariant violated";
 
-    // Round-trip tests: Error<D, Never, Never>
+    // Round-trip tests: Fault<D, Never, Never>
     #[test]
     fn roundtrip_domain_never_never() {
-        let err = Error::<TestDomainError, Never, Never>::Domain(TestDomainError::with_message(
+        let err = Fault::<TestDomainError, Never, Never>::Domain(TestDomainError::with_message(
             42,
             "test error",
         ));
         let json = serde_json::to_string(&err).unwrap();
-        let deserialized: Error<TestDomainError, Never, Never> =
+        let deserialized: Fault<TestDomainError, Never, Never> =
             serde_json::from_str(&json).unwrap();
         assert_eq!(err, deserialized);
     }
 
-    // Round-trip tests: Error<D, anyhow::Error, Never>
+    // Round-trip tests: Fault<D, anyhow::Error, Never>
     #[test]
     fn roundtrip_domain_anyhow_never() {
-        let err = Error::<TestDomainError, anyhow::Error, Never>::Domain(
+        let err = Fault::<TestDomainError, anyhow::Error, Never>::Domain(
             TestDomainError::with_message(42, "test error"),
         );
         let json = serde_json::to_string(&err).unwrap();
-        let deserialized: Error<TestDomainError, anyhow::Error, Never> =
+        let deserialized: Fault<TestDomainError, anyhow::Error, Never> =
             serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            Error::Domain(d) => assert_eq!(d, TestDomainError::with_message(42, "test error")),
+            Fault::Domain(d) => assert_eq!(d, TestDomainError::with_message(42, "test error")),
             _ => panic!("Expected Domain variant"),
         }
     }
 
     #[test]
     fn roundtrip_transient_anyhow_never() {
-        let err = Error::<TestDomainError, anyhow::Error, Never>::Transient(anyhow::anyhow!(
+        let err = Fault::<TestDomainError, anyhow::Error, Never>::Transient(anyhow::anyhow!(
             TRANSIENT_MSG
         ));
         let json = serde_json::to_string(&err).unwrap();
-        let deserialized: Error<TestDomainError, anyhow::Error, Never> =
+        let deserialized: Fault<TestDomainError, anyhow::Error, Never> =
             serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            Error::Transient(e) => assert_eq!(e.to_string(), TRANSIENT_MSG),
+            Fault::Transient(e) => assert_eq!(e.to_string(), TRANSIENT_MSG),
             _ => panic!("Expected Transient variant"),
         }
     }
 
-    // Round-trip tests: Error<D, Never, anyhow::Error>
+    // Round-trip tests: Fault<D, Never, anyhow::Error>
     #[test]
     fn roundtrip_domain_never_anyhow() {
-        let err = Error::<TestDomainError, Never, anyhow::Error>::Domain(
+        let err = Fault::<TestDomainError, Never, anyhow::Error>::Domain(
             TestDomainError::with_message(42, "test error"),
         );
         let json = serde_json::to_string(&err).unwrap();
-        let deserialized: Error<TestDomainError, Never, anyhow::Error> =
+        let deserialized: Fault<TestDomainError, Never, anyhow::Error> =
             serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            Error::Domain(d) => assert_eq!(d, TestDomainError::with_message(42, "test error")),
+            Fault::Domain(d) => assert_eq!(d, TestDomainError::with_message(42, "test error")),
             _ => panic!("Expected Domain variant"),
         }
     }
 
     #[test]
     fn roundtrip_invariant_never_anyhow() {
-        let err = Error::<TestDomainError, Never, anyhow::Error>::Invariant(anyhow::anyhow!(
+        let err = Fault::<TestDomainError, Never, anyhow::Error>::Invariant(anyhow::anyhow!(
             INVARIANT_MSG
         ));
         let json = serde_json::to_string(&err).unwrap();
-        let deserialized: Error<TestDomainError, Never, anyhow::Error> =
+        let deserialized: Fault<TestDomainError, Never, anyhow::Error> =
             serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            Error::Invariant(e) => assert_eq!(e.to_string(), INVARIANT_MSG),
+            Fault::Invariant(e) => assert_eq!(e.to_string(), INVARIANT_MSG),
             _ => panic!("Expected Invariant variant"),
         }
     }
 
-    // Round-trip tests: Error<D, anyhow::Error, anyhow::Error>
+    // Round-trip tests: Fault<D, anyhow::Error, anyhow::Error>
     #[test]
     fn roundtrip_domain_anyhow_anyhow() {
-        let err = Error::<TestDomainError, anyhow::Error, anyhow::Error>::Domain(
+        let err = Fault::<TestDomainError, anyhow::Error, anyhow::Error>::Domain(
             TestDomainError::with_message(42, "test error"),
         );
         let json = serde_json::to_string(&err).unwrap();
-        let deserialized: Error<TestDomainError, anyhow::Error, anyhow::Error> =
+        let deserialized: Fault<TestDomainError, anyhow::Error, anyhow::Error> =
             serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            Error::Domain(d) => assert_eq!(d, TestDomainError::with_message(42, "test error")),
+            Fault::Domain(d) => assert_eq!(d, TestDomainError::with_message(42, "test error")),
             _ => panic!("Expected Domain variant"),
         }
     }
 
     #[test]
     fn roundtrip_transient_anyhow_anyhow() {
-        let err = Error::<TestDomainError, anyhow::Error, anyhow::Error>::Transient(
+        let err = Fault::<TestDomainError, anyhow::Error, anyhow::Error>::Transient(
             anyhow::anyhow!(TRANSIENT_MSG),
         );
         let json = serde_json::to_string(&err).unwrap();
-        let deserialized: Error<TestDomainError, anyhow::Error, anyhow::Error> =
+        let deserialized: Fault<TestDomainError, anyhow::Error, anyhow::Error> =
             serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            Error::Transient(e) => assert_eq!(e.to_string(), TRANSIENT_MSG),
+            Fault::Transient(e) => assert_eq!(e.to_string(), TRANSIENT_MSG),
             _ => panic!("Expected Transient variant"),
         }
     }
 
     #[test]
     fn roundtrip_invariant_anyhow_anyhow() {
-        let err = Error::<TestDomainError, anyhow::Error, anyhow::Error>::Invariant(
+        let err = Fault::<TestDomainError, anyhow::Error, anyhow::Error>::Invariant(
             anyhow::anyhow!(INVARIANT_MSG),
         );
         let json = serde_json::to_string(&err).unwrap();
-        let deserialized: Error<TestDomainError, anyhow::Error, anyhow::Error> =
+        let deserialized: Fault<TestDomainError, anyhow::Error, anyhow::Error> =
             serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            Error::Invariant(e) => assert_eq!(e.to_string(), INVARIANT_MSG),
+            Fault::Invariant(e) => assert_eq!(e.to_string(), INVARIANT_MSG),
             _ => panic!("Expected Invariant variant"),
         }
     }
@@ -296,15 +296,15 @@ mod tests {
     // anyhow::Error context is preserved as Display string
     #[test]
     fn anyhow_preserves_display_string() {
-        let err = Error::<TestDomainError, anyhow::Error, Never>::Transient(
+        let err = Fault::<TestDomainError, anyhow::Error, Never>::Transient(
             anyhow::anyhow!("inner error").context("outer context"),
         );
         let json = serde_json::to_string(&err).unwrap();
-        let deserialized: Error<TestDomainError, anyhow::Error, Never> =
+        let deserialized: Fault<TestDomainError, anyhow::Error, Never> =
             serde_json::from_str(&json).unwrap();
 
         match deserialized {
-            Error::Transient(e) => assert_eq!(e.to_string(), "outer context"),
+            Fault::Transient(e) => assert_eq!(e.to_string(), "outer context"),
             _ => panic!("Expected Transient variant"),
         }
     }
@@ -312,54 +312,54 @@ mod tests {
     // Error cases: unrepresentable states
     #[test]
     fn error_transient_when_never() {
-        let err = Error::<TestDomainError, anyhow::Error, Never>::Transient(anyhow::anyhow!(
+        let err = Fault::<TestDomainError, anyhow::Error, Never>::Transient(anyhow::anyhow!(
             "some error"
         ));
         let json = serde_json::to_string(&err).unwrap();
-        let result: Result<Error<TestDomainError, Never, Never>, _> = serde_json::from_str(&json);
+        let result: Result<Fault<TestDomainError, Never, Never>, _> = serde_json::from_str(&json);
         assert!(result.is_err());
     }
 
     #[test]
     fn error_invariant_when_never() {
-        let err = Error::<TestDomainError, Never, anyhow::Error>::Invariant(anyhow::anyhow!(
+        let err = Fault::<TestDomainError, Never, anyhow::Error>::Invariant(anyhow::anyhow!(
             "some error"
         ));
         let json = serde_json::to_string(&err).unwrap();
-        let result: Result<Error<TestDomainError, Never, Never>, _> = serde_json::from_str(&json);
+        let result: Result<Fault<TestDomainError, Never, Never>, _> = serde_json::from_str(&json);
         assert!(result.is_err());
     }
 
     #[test]
     fn error_transient_when_never_with_invariant_allowed() {
-        let err = Error::<TestDomainError, anyhow::Error, anyhow::Error>::Transient(
+        let err = Fault::<TestDomainError, anyhow::Error, anyhow::Error>::Transient(
             anyhow::anyhow!("some error"),
         );
         let json = serde_json::to_string(&err).unwrap();
-        let result: Result<Error<TestDomainError, Never, anyhow::Error>, _> =
+        let result: Result<Fault<TestDomainError, Never, anyhow::Error>, _> =
             serde_json::from_str(&json);
         assert!(result.is_err());
     }
 
     #[test]
     fn error_invariant_when_never_with_transient_allowed() {
-        let err = Error::<TestDomainError, anyhow::Error, anyhow::Error>::Invariant(
+        let err = Fault::<TestDomainError, anyhow::Error, anyhow::Error>::Invariant(
             anyhow::anyhow!("some error"),
         );
         let json = serde_json::to_string(&err).unwrap();
-        let result: Result<Error<TestDomainError, anyhow::Error, Never>, _> =
+        let result: Result<Fault<TestDomainError, anyhow::Error, Never>, _> =
             serde_json::from_str(&json);
         assert!(result.is_err());
     }
 
     #[test]
     fn error_domain_when_never() {
-        let err = Error::<TestDomainError, Never, Never>::Domain(TestDomainError::with_message(
+        let err = Fault::<TestDomainError, Never, Never>::Domain(TestDomainError::with_message(
             42,
             "test error",
         ));
         let json = serde_json::to_string(&err).unwrap();
-        let result: Result<Error<Never, Never, Never>, _> = serde_json::from_str(&json);
+        let result: Result<Fault<Never, Never, Never>, _> = serde_json::from_str(&json);
         assert!(result.is_err());
     }
 }
