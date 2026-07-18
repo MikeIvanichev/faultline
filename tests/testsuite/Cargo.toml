@@ -4,8 +4,6 @@ version = "0.0.0"
 edition.workspace = true
 publish.workspace = true
 
-[dev-dependencies]
-automod.workspace = true
 
 [lints]
 workspace = true
