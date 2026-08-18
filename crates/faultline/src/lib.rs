@@ -42,11 +42,10 @@ pub(crate) fn make_invariant_violation(
 /// Encodes failures as domain errors, transient errors, or invariant
 /// violations. See the [module documentation](self) for rationale and usage
 /// patterns and for guidance on mapping this to API-facing error types.
-#[derive(Debug, PartialEq, thiserror::Error)]
-pub enum Fault<D, T = anyhow::Error, I = Never>
+#[derive(Debug, thiserror::Error)]
+pub enum Fault<D, T = anyhow::Error>
 where
     T: ErrorKind,
-    I: ErrorKind,
 {
     /// Domain error: expected business logic failures.
     ///
@@ -68,39 +67,34 @@ where
     ///
     /// Used when an assumed invariant is not upheld and the current operation
     /// must abort. This is an alternative to `panic!` when the process can
-    /// remain running but the request cannot proceed. `I` defaults to
-    /// [`Never`]; use `anyhow::Error` in system-level code that may encounter
-    /// violations.
+    /// remain running but the request cannot proceed.
     #[error("Invariant violation: {0}")]
-    Invariant(I),
+    Invariant(anyhow::Error),
 }
 
-impl<D> Fault<D, Never, Never> {
+impl<D> Fault<D, Never> {
     #[inline]
     pub fn domain(error: D) -> Self {
         Fault::Domain(error)
     }
 }
 
-impl<D> Fault<D, anyhow::Error, Never> {
+impl<D> Fault<D, anyhow::Error> {
     #[inline]
     pub fn transient(error: impl Into<anyhow::Error>) -> Self {
         Fault::Transient(error.into())
     }
 }
 
-impl<D> Fault<D, Never, anyhow::Error> {
+impl<D, T> Fault<D, T>
+where
+    T: ErrorKind,
+{
     #[inline]
     pub fn invariant(error: impl Into<anyhow::Error>) -> Self {
         Fault::Invariant(error.into())
     }
-}
 
-impl<D, T, I> Fault<D, T, I>
-where
-    T: ErrorKind,
-    I: ErrorKind,
-{
     #[inline]
     pub fn is_domain(&self) -> bool {
         matches!(self, Fault::Domain(_))
@@ -117,7 +111,7 @@ where
     }
 
     #[inline]
-    pub fn extract_domain(self) -> Either<D, Fault<Never, T, I>> {
+    pub fn extract_domain(self) -> Either<D, Fault<Never, T>> {
         match self {
             Fault::Domain(d) => Either::Left(d),
             Fault::Transient(t) => Either::Right(Fault::Transient(t)),
@@ -126,7 +120,7 @@ where
     }
 
     #[inline]
-    pub fn extract_transient(self) -> Either<T, Fault<D, Never, I>> {
+    pub fn extract_transient(self) -> Either<T, Fault<D, Never>> {
         match self {
             Fault::Domain(d) => Either::Right(Fault::Domain(d)),
             Fault::Transient(t) => Either::Left(t),
@@ -135,7 +129,7 @@ where
     }
 
     #[inline]
-    pub fn extract_invariant(self) -> Either<I, Fault<D, T, Never>> {
+    pub fn extract_invariant(self) -> Either<anyhow::Error, Fault<D, T>> {
         match self {
             Fault::Domain(d) => Either::Right(Fault::Domain(d)),
             Fault::Transient(t) => Either::Right(Fault::Transient(t)),
@@ -144,7 +138,7 @@ where
     }
 
     #[inline]
-    pub fn map_domain<D2>(self, f: impl FnOnce(D) -> D2) -> Fault<D2, T, I> {
+    pub fn map_domain<D2>(self, f: impl FnOnce(D) -> D2) -> Fault<D2, T> {
         match self {
             Fault::Domain(d) => Fault::Domain(f(d)),
             Fault::Transient(t) => Fault::Transient(t),
@@ -153,7 +147,7 @@ where
     }
 
     #[inline]
-    pub fn map_transient<T2>(self, f: impl FnOnce(T) -> T2) -> Fault<D, T2, I>
+    pub fn map_transient<T2>(self, f: impl FnOnce(T) -> T2) -> Fault<D, T2>
     where
         T2: ErrorKind,
     {
@@ -165,10 +159,7 @@ where
     }
 
     #[inline]
-    pub fn map_invariant<I2>(self, f: impl FnOnce(I) -> I2) -> Fault<D, T, I2>
-    where
-        I2: ErrorKind,
-    {
+    pub fn map_invariant(self, f: impl FnOnce(anyhow::Error) -> anyhow::Error) -> Self {
         match self {
             Fault::Domain(d) => Fault::Domain(d),
             Fault::Transient(t) => Fault::Transient(t),
@@ -196,7 +187,7 @@ where
 
     #[inline]
     #[must_use]
-    pub fn inspect_invariant(self, f: impl FnOnce(&I)) -> Self {
+    pub fn inspect_invariant(self, f: impl FnOnce(&anyhow::Error)) -> Self {
         if let Fault::Invariant(ref i) = self {
             f(i);
         }
@@ -204,7 +195,7 @@ where
     }
 
     #[inline]
-    pub fn upcast<D2>(self) -> Fault<D2, T, I>
+    pub fn upcast<D2>(self) -> Fault<D2, T>
     where
         D2: From<D>,
     {
@@ -221,25 +212,24 @@ where
     /// The `invariant` parameter should describe the invariant that was
     /// violated if a domain error is encountered.
     #[inline]
-    pub fn expect_err_not_domain(self, invariant: &str) -> Fault<Never, T, anyhow::Error>
+    pub fn expect_err_not_domain(self, invariant: &str) -> Fault<Never, T>
     where
         D: Into<anyhow::Error>,
     {
         match self {
             Fault::Domain(d) => Fault::Invariant(make_invariant_violation(invariant, d)),
             Fault::Transient(t) => Fault::Transient(t),
-            Fault::Invariant(i) => Fault::Invariant(i.into()),
+            Fault::Invariant(i) => Fault::Invariant(i),
         }
     }
 }
 
-impl<T, I> Fault<Never, T, I>
+impl<T> Fault<Never, T>
 where
     T: ErrorKind,
-    I: ErrorKind,
 {
     #[inline]
-    pub fn squash<D>(self) -> Fault<D, T, I> {
+    pub fn squash<D>(self) -> Fault<D, T> {
         match self {
             Fault::Invariant(err) => Fault::Invariant(err),
             Fault::Transient(err) => Fault::Transient(err),
@@ -247,44 +237,12 @@ where
     }
 }
 
-impl From<Fault<Never, Never, Never>> for Never {
+impl<D> From<Fault<D, Never>> for Fault<D, anyhow::Error> {
     #[inline]
-    fn from(value: Fault<Never, Never, Never>) -> Self {
-        match value {}
-    }
-}
-
-impl<D, I> From<Fault<D, Never, I>> for Fault<D, anyhow::Error, I>
-where
-    I: ErrorKind,
-{
-    #[inline]
-    fn from(value: Fault<D, Never, I>) -> Self {
+    fn from(value: Fault<D, Never>) -> Self {
         match value {
             Fault::Domain(d) => Fault::Domain(d),
             Fault::Invariant(i) => Fault::Invariant(i),
-        }
-    }
-}
-
-impl<D, T> From<Fault<D, T, Never>> for Fault<D, T, anyhow::Error>
-where
-    T: ErrorKind,
-{
-    #[inline]
-    fn from(value: Fault<D, T, Never>) -> Self {
-        match value {
-            Fault::Domain(d) => Fault::Domain(d),
-            Fault::Transient(t) => Fault::Transient(t),
-        }
-    }
-}
-
-impl<D> From<Fault<D, Never, Never>> for Fault<D, anyhow::Error, anyhow::Error> {
-    #[inline]
-    fn from(value: Fault<D, Never, Never>) -> Self {
-        match value {
-            Fault::Domain(d) => Fault::Domain(d),
         }
     }
 }

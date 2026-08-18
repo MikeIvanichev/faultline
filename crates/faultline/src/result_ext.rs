@@ -7,17 +7,17 @@ use either::Either;
 
 /// Extension trait for wrapping arbitrary errors as [`Fault`].
 ///
-/// Each method returns a maximally constrained error type with [`Never`]
-/// in all slots except the one being set. This allows `?` to widen via
-/// the existing `From` impls.
+/// Each method returns a maximally constrained error type with [`Never`] in
+/// the transient slot unless the method sets it. This allows `?` to widen via
+/// the existing `From` impl.
 pub trait ResultIntoFaultExt<OK, E> {
     /// Wrap error as a domain error.
     ///
     /// To widen the domain type, chain with `.upcast_err()`.
-    fn map_err_into_domain(self) -> Result<OK, Fault<E, Never, Never>>;
+    fn map_err_into_domain(self) -> Result<OK, Fault<E, Never>>;
 
     /// Wrap error as a transient error.
-    fn map_err_into_transient(self) -> Result<OK, Fault<Never, anyhow::Error, Never>>
+    fn map_err_into_transient(self) -> Result<OK, Fault<Never, anyhow::Error>>
     where
         E: Into<anyhow::Error>;
 
@@ -25,22 +25,19 @@ pub trait ResultIntoFaultExt<OK, E> {
     ///
     /// The `invariant` parameter should describe the invariant that was
     /// violated.
-    fn map_err_into_invariant(
-        self,
-        invariant: &str,
-    ) -> Result<OK, Fault<Never, Never, anyhow::Error>>
+    fn map_err_into_invariant(self, invariant: &str) -> Result<OK, Fault<Never, Never>>
     where
         E: Into<anyhow::Error>;
 }
 
 impl<OK, E> ResultIntoFaultExt<OK, E> for Result<OK, E> {
     #[inline]
-    fn map_err_into_domain(self) -> Result<OK, Fault<E, Never, Never>> {
+    fn map_err_into_domain(self) -> Result<OK, Fault<E, Never>> {
         self.map_err(Fault::Domain)
     }
 
     #[inline]
-    fn map_err_into_transient(self) -> Result<OK, Fault<Never, anyhow::Error, Never>>
+    fn map_err_into_transient(self) -> Result<OK, Fault<Never, anyhow::Error>>
     where
         E: Into<anyhow::Error>,
     {
@@ -48,10 +45,7 @@ impl<OK, E> ResultIntoFaultExt<OK, E> for Result<OK, E> {
     }
 
     #[inline]
-    fn map_err_into_invariant(
-        self,
-        invariant: &str,
-    ) -> Result<OK, Fault<Never, Never, anyhow::Error>>
+    fn map_err_into_invariant(self, invariant: &str) -> Result<OK, Fault<Never, Never>>
     where
         E: Into<anyhow::Error>,
     {
@@ -59,26 +53,26 @@ impl<OK, E> ResultIntoFaultExt<OK, E> for Result<OK, E> {
     }
 }
 
-pub trait ResultExt<OK, D, T, I>
+pub trait ResultExt<OK, D, T>
 where
     T: ErrorKind,
-    I: ErrorKind,
 {
     /// Map the domain error type
-    fn map_err_domain<D2>(self, f: impl FnOnce(D) -> D2) -> Result<OK, Fault<D2, T, I>>;
+    fn map_err_domain<D2>(self, f: impl FnOnce(D) -> D2) -> Result<OK, Fault<D2, T>>;
 
     /// Map the transient error type
-    fn map_err_transient<Tr2>(self, f: impl FnOnce(T) -> Tr2) -> Result<OK, Fault<D, Tr2, I>>
+    fn map_err_transient<T2>(self, f: impl FnOnce(T) -> T2) -> Result<OK, Fault<D, T2>>
     where
-        Tr2: ErrorKind;
+        T2: ErrorKind;
 
-    /// Map the invariant error type
-    fn map_err_invariant<I2>(self, f: impl FnOnce(I) -> I2) -> Result<OK, Fault<D, T, I2>>
-    where
-        I2: ErrorKind;
+    /// Map the invariant error
+    fn map_err_invariant(
+        self,
+        f: impl FnOnce(anyhow::Error) -> anyhow::Error,
+    ) -> Result<OK, Fault<D, T>>;
 
     /// Upcast the domain error type
-    fn upcast_err<U>(self) -> Result<OK, Fault<U, T, I>>
+    fn upcast_err<U>(self) -> Result<OK, Fault<U, T>>
     where
         U: From<D>;
 
@@ -92,42 +86,41 @@ where
 
     /// Inspect the invariant error if present (with side effects)
     #[must_use]
-    fn inspect_err_invariant(self, f: impl FnOnce(&I)) -> Self;
+    fn inspect_err_invariant(self, f: impl FnOnce(&anyhow::Error)) -> Self;
 
     /// Extract domain errors for handling, propagate transient/invariant
     #[must_use]
-    fn extract_err_domain(self) -> Either<D, Result<OK, Fault<Never, T, I>>>;
+    fn extract_err_domain(self) -> Either<D, Result<OK, Fault<Never, T>>>;
 
     /// Extract transient errors for handling, propagate domain/invariant
     #[must_use]
-    fn extract_err_transient(self) -> Either<T, Result<OK, Fault<D, Never, I>>>;
+    fn extract_err_transient(self) -> Either<T, Result<OK, Fault<D, Never>>>;
 
     /// Extract invariant errors for handling, propagate domain/transient
     #[must_use]
-    fn extract_err_invariant(self) -> Either<I, Result<OK, Fault<D, T, Never>>>;
+    fn extract_err_invariant(self) -> Either<anyhow::Error, Result<OK, Fault<D, T>>>;
 
     /// Converts domain errors to invariant violations; passes through transient
     /// and invariant errors unchanged.
     ///
     /// The `invariant` parameter should describe the invariant that was
     /// violated if a domain error is encountered.
-    fn expect_err_not_domain(self, invariant: &str) -> Result<OK, Fault<Never, T, anyhow::Error>>
+    fn expect_err_not_domain(self, invariant: &str) -> Result<OK, Fault<Never, T>>
     where
         D: Into<anyhow::Error>;
 }
 
-impl<OK, D, T, I> ResultExt<OK, D, T, I> for Result<OK, Fault<D, T, I>>
+impl<OK, D, T> ResultExt<OK, D, T> for Result<OK, Fault<D, T>>
 where
     T: ErrorKind,
-    I: ErrorKind,
 {
     #[inline]
-    fn map_err_domain<D2>(self, f: impl FnOnce(D) -> D2) -> Result<OK, Fault<D2, T, I>> {
+    fn map_err_domain<D2>(self, f: impl FnOnce(D) -> D2) -> Result<OK, Fault<D2, T>> {
         self.map_err(|e| e.map_domain(f))
     }
 
     #[inline]
-    fn map_err_transient<T2>(self, f: impl FnOnce(T) -> T2) -> Result<OK, Fault<D, T2, I>>
+    fn map_err_transient<T2>(self, f: impl FnOnce(T) -> T2) -> Result<OK, Fault<D, T2>>
     where
         T2: ErrorKind,
     {
@@ -135,15 +128,15 @@ where
     }
 
     #[inline]
-    fn map_err_invariant<I2>(self, f: impl FnOnce(I) -> I2) -> Result<OK, Fault<D, T, I2>>
-    where
-        I2: ErrorKind,
-    {
+    fn map_err_invariant(
+        self,
+        f: impl FnOnce(anyhow::Error) -> anyhow::Error,
+    ) -> Result<OK, Fault<D, T>> {
         self.map_err(|e| e.map_invariant(f))
     }
 
     #[inline]
-    fn upcast_err<U>(self) -> Result<OK, Fault<U, T, I>>
+    fn upcast_err<U>(self) -> Result<OK, Fault<U, T>>
     where
         U: From<D>,
     {
@@ -161,12 +154,12 @@ where
     }
 
     #[inline]
-    fn inspect_err_invariant(self, f: impl FnOnce(&I)) -> Self {
+    fn inspect_err_invariant(self, f: impl FnOnce(&anyhow::Error)) -> Self {
         self.map_err(|e| e.inspect_invariant(f))
     }
 
     #[inline]
-    fn extract_err_domain(self) -> Either<D, Result<OK, Fault<Never, T, I>>> {
+    fn extract_err_domain(self) -> Either<D, Result<OK, Fault<Never, T>>> {
         match self {
             Ok(ok) => Either::Right(Ok(ok)),
             Err(err) => match err.extract_domain() {
@@ -177,7 +170,7 @@ where
     }
 
     #[inline]
-    fn extract_err_transient(self) -> Either<T, Result<OK, Fault<D, Never, I>>> {
+    fn extract_err_transient(self) -> Either<T, Result<OK, Fault<D, Never>>> {
         match self {
             Ok(ok) => Either::Right(Ok(ok)),
             Err(err) => match err.extract_transient() {
@@ -188,7 +181,7 @@ where
     }
 
     #[inline]
-    fn extract_err_invariant(self) -> Either<I, Result<OK, Fault<D, T, Never>>> {
+    fn extract_err_invariant(self) -> Either<anyhow::Error, Result<OK, Fault<D, T>>> {
         match self {
             Ok(ok) => Either::Right(Ok(ok)),
             Err(err) => match err.extract_invariant() {
@@ -199,7 +192,7 @@ where
     }
 
     #[inline]
-    fn expect_err_not_domain(self, invariant: &str) -> Result<OK, Fault<Never, T, anyhow::Error>>
+    fn expect_err_not_domain(self, invariant: &str) -> Result<OK, Fault<Never, T>>
     where
         D: Into<anyhow::Error>,
     {
@@ -207,22 +200,20 @@ where
     }
 }
 
-pub trait ResultSquashExt<OK, T, I>
+pub trait ResultSquashExt<OK, T>
 where
     T: ErrorKind,
-    I: ErrorKind,
 {
     /// Squash a domain-infallible error to any domain type
-    fn squash_err<D>(self) -> Result<OK, Fault<D, T, I>>;
+    fn squash_err<D>(self) -> Result<OK, Fault<D, T>>;
 }
 
-impl<OK, T, I> ResultSquashExt<OK, T, I> for Result<OK, Fault<Never, T, I>>
+impl<OK, T> ResultSquashExt<OK, T> for Result<OK, Fault<Never, T>>
 where
     T: ErrorKind,
-    I: ErrorKind,
 {
     #[inline]
-    fn squash_err<D>(self) -> Result<OK, Fault<D, T, I>> {
+    fn squash_err<D>(self) -> Result<OK, Fault<D, T>> {
         self.map_err(Fault::squash)
     }
 }
